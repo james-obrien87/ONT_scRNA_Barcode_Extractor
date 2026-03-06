@@ -193,13 +193,13 @@ GGTTAACC
 
 ```bash
 # Basic run (uses all available CPU cores)
-python pipeline.py \
+python extractor.py \
   --config config.yaml \
   --input reads.fastq.gz \
   --output_dir results/
 
 # Specify core count and chunk size
-python pipeline.py \
+python extractor.py \
   --config config.yaml \
   --input reads.fastq.gz \
   --output_dir results/ \
