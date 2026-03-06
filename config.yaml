@@ -1,0 +1,279 @@
+# =============================================================================
+# ONT scRNA-seq Barcode Extraction Pipeline — Configuration File
+# =============================================================================
+#
+# BARCODE STRUCTURE (3' end of read, forward-strand orientation):
+#
+#   [cDNA insert] · [polyA] · [BC1:8bp] · [Linker1:12bp] · [BC2:8bp]
+#                           · [Linker2:12bp] · [BC3:8bp] · [UMI:10bp]
+#
+# ONT reads arrive in both forward and reverse orientations. The pipeline
+# handles this automatically — all sequences in this file should be supplied
+# in their canonical FORWARD-STRAND orientation.
+#
+# Required fields are marked <REQUIRED>. All other fields have safe defaults
+# and can be left as-is until you have reason to tune them.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# ADAPTER TRIMMING (Stage 0)
+#
+# ONT sequencing adapters must be removed before barcode extraction. Because
+# reads arrive in both orientations, the pipeline automatically tries both the
+# canonical adapter AND its reverse complement at each read end:
+#
+#   5' end searched with:  sequence_5prime  AND  RC(sequence_3prime)
+#   3' end searched with:  sequence_3prime  AND  RC(sequence_5prime)
+#
+# This means you only need to supply the forward-strand sequences here —
+# the pipeline derives all four orientations needed for trimming internally.
+# -----------------------------------------------------------------------------
+adapter:
+
+  # The ONT 5' adapter in forward-strand orientation.
+  # This is the adapter that appears at the 5' end of a forward-strand read,
+  # and as RC at the 3' end of a reverse-strand read.
+  # Set to "" to skip 5' adapter trimming entirely.
+  sequence_5prime: "<REQUIRED: e.g. AATGTACTTCGTTCAGTTACGTATTGCT>"
+
+  # The ONT 3' adapter in forward-strand orientation.
+  # This is the adapter that appears at the 3' end of a forward-strand read,
+  # and as RC at the 5' end of a reverse-strand read.
+  # Set to "" to skip 3' adapter trimming entirely.
+  sequence_3prime: "<REQUIRED: e.g. GCAATACGTAACTGAACGAAGTACATT>"
+
+  # Maximum Levenshtein distance (substitutions + insertions + deletions
+  # combined) for an adapter hit to be accepted.
+  # Recommended: 2 — accounts for typical ONT basecalling errors at read ends
+  # without risking incorrect trimming into the cDNA body.
+  max_errors: 2
+
+# -----------------------------------------------------------------------------
+# LINKER 1 (Stage 2) — the fixed sequence between BC1 and BC2
+#
+# Linker detection uses a two-pass k-mer seed-and-extend approach:
+#   1. K-mer seeding: exact k-mer matches in the read seed candidate positions.
+#   2. Levenshtein verification: full alignment confirms the best hit.
+#
+# The Linker1 search is restricted to the expected 3' barcode region of the
+# read to avoid spurious matches in A/T-rich cDNA regions.
+# -----------------------------------------------------------------------------
+linker1:
+
+  # The known Linker1 sequence in forward-strand orientation. <REQUIRED>
+  # Typically 12 bp for standard split-barcode libraries.
+  sequence: "<REQUIRED: e.g. ATCCACGTGCTTG>"
+
+  # K-mer size for the seeding pass.
+  # Smaller k → more candidate positions found (higher recall, more noise).
+  # Larger k → fewer candidates found (faster, but may miss highly mutated linkers).
+  # Recommended: 8 for a 12 bp linker. Reduce to 6 if linker1_max_levenshtein > 2.
+  kmer_size: 8
+
+  # Maximum edit distance for a Linker1 hit to be accepted.
+  # 2 allows up to 2 combined substitutions/insertions/deletions.
+  # Recommended: 2. Increasing above 3 risks spurious matches in the cDNA body.
+  max_levenshtein: 2
+
+
+# -----------------------------------------------------------------------------
+# LINKER 2 (Stage 2) — the fixed sequence between BC2 and BC3
+#
+# Linker2 is searched only AFTER the confirmed Linker1 end position, enforcing
+# the correct structural order and preventing cross-matches between linkers.
+# -----------------------------------------------------------------------------
+linker2:
+
+  # The known Linker2 sequence in forward-strand orientation. <REQUIRED>
+  sequence: "<REQUIRED: e.g. TCTTCAGCGTTCC>"
+
+  # K-mer size for the seeding pass. Same recommendations as linker1.kmer_size.
+  kmer_size: 8
+
+  # Maximum edit distance for Linker2 acceptance. Same recommendations as above.
+  max_levenshtein: 2
+
+# -----------------------------------------------------------------------------
+# BARCODES + UMI (Stages 4–5)
+#
+# Each barcode is extracted from a window whose both boundaries are confirmed
+# structural anchors (linker positions and/or polyA end). This makes extraction
+# tolerant of ±1–2 bp indels in any barcode without fixed-width slicing.
+#
+# The UMI is always anchored to the 3' read end, independent of barcode indels.
+# -----------------------------------------------------------------------------
+barcodes:
+
+  # Barcode lengths in bp. Adjust only if your library design differs.
+  # These define the width of each extraction window and must be correct.
+  bc1_length: 8
+  bc2_length: 8
+  bc3_length: 8
+
+  # UMI length in bp. The UMI immediately follows BC3 with no intervening linker.
+  # The UMI is always extracted as the last umi_length bases of the read.
+  umi_length: 10
+
+  # Maximum Levenshtein distance for whitelist correction of each barcode.
+  #
+  # Recommended starting point: 1 for all three.
+  #
+  # Setting to 0: only exact whitelist matches accepted (strictest; no correction).
+  # Setting to 1: allows correction of one sequencing error per barcode (recommended).
+  # Setting to 2: higher recall but risks ambiguous corrections if the whitelist
+  #               has barcodes closer than 4 Hamming distance apart — check your
+  #               whitelist's minimum pairwise distance before increasing.
+  #
+  # Ambiguous corrections (two whitelist entries equidistant from the raw barcode)
+  # always fail the read regardless of this setting.
+  bc1_max_levenshtein: 1
+  bc2_max_levenshtein: 1
+  bc3_max_levenshtein: 1
+
+  # Paths to barcode whitelist files. Each file contains one barcode per line
+  # with no header. Barcodes must match the forward-strand orientation.
+  #
+  # The pipeline performs an exact match first (O(1)), then a Levenshtein scan
+  # only if the exact match fails. For large whitelists (>100k entries), install
+  # edlib (pip install edlib) for a significant speed-up.
+  #
+  # Set any path to null to skip whitelist correction for that barcode.
+  # The raw extracted sequence will be used as-is (useful for exploratory runs).
+  whitelist_bc1: "whitelists/bc1_whitelist.txt"
+  whitelist_bc2: "whitelists/bc2_whitelist.txt"
+  whitelist_bc3: "whitelists/bc3_whitelist.txt"
+
+
+# -----------------------------------------------------------------------------
+# INSERT LENGTH FILTER (Stage 5)
+# -----------------------------------------------------------------------------
+insert:
+
+  # Minimum cDNA insert length in bp after the barcode region is removed.
+  # Reads whose insert is shorter than this are discarded and written to
+  # unassigned_reads.fastq with FAIL_REASON:INSERT_TOO_SHORT_<n>bp.
+  #
+  # Recommended: 100–200 bp for typical ONT cDNA libraries. Setting too low
+  # retains very short fragments that are unlikely to align uniquely to the
+  # genome. Setting too high discards short but valid transcripts.
+  min_length: <REQUIRED: e.g. 150>
+
+# -----------------------------------------------------------------------------
+# POLYA TAIL DETECTION (Stage 3)
+#
+# The polyA tail immediately precedes BC1 and is used as the hard LEFT anchor
+# for BC1 extraction. This gives BC1 a doubly-confirmed window boundary,
+# enabling correct extraction even when BC1 contains a 1bp indel.
+#
+# Additionally, the confirmed polyA position is used to cleanly trim the
+# insert at the start of the polyA run rather than at an estimated offset.
+#
+# If the polyA tail is not detected, extraction degrades gracefully: BC1
+# is extracted from a wider window anchored from Linker1 with a small slack.
+# The read is not failed just because polyA was not found.
+# -----------------------------------------------------------------------------
+polya:
+
+  # Minimum number of consecutive A's (within the mismatch budget below)
+  # to call a polyA tail.
+  # Recommended: 6–8. Too low risks false positives in A-rich cDNA regions;
+  # too high may miss short tails in degraded reads or 5'-truncated transcripts.
+  min_run: 6
+
+  # Maximum number of non-A bases tolerated within the polyA run.
+  # ONT basecallers frequently introduce isolated non-A bases within long
+  # homopolymer runs (a known limitation of pore-based sequencing). Setting
+  # this to 1 catches most real polyA tails while tolerating this noise.
+  # Set to 0 for strict mode (no mismatches in the A-run).
+  max_mismatches: 1
+
+
+# -----------------------------------------------------------------------------
+# ORIENTATION DETECTION (Stage 1)
+#
+# ONT sequences reads from both strands of the cDNA molecule, so roughly half
+# of all reads arrive in the reverse complement orientation. The pipeline
+# handles this by attempting barcode extraction in both orientations:
+#   1. Forward strand attempt (as-is after adapter trimming).
+#   2. Reverse complement attempt (if forward fails at any stage).
+#
+# Note: adapter trimming (Stage 0) is always orientation-aware regardless of
+# this setting — it tries both adapter orientations at each read end.
+# -----------------------------------------------------------------------------
+orientation:
+
+  # If true (recommended), retry barcode extraction on the reverse complement
+  # of the trimmed read when the forward-strand attempt fails.
+  #
+  # The strand is recorded in the output header as + (forward) or - (reverse).
+  # Barcodes extracted from a reverse-strand read are reverse complemented before
+  # whitelist correction so they always match the forward-strand whitelist.
+  #
+  # Set to false only if you are certain your library is strand-specific and
+  # all reads are in a single known orientation — disabling this halves the
+  # work for each read.
+  try_reverse_complement: true
+
+# -----------------------------------------------------------------------------
+# CHIMERIC READ DETECTION (Stage 6)
+#
+# A read is flagged as chimeric if EITHER of these tests passes:
+#
+#   Test A (adapter_check):
+#       The ONT adapter sequence is found inside the putative cDNA insert.
+#       An adapter in the cDNA body indicates that two separate molecules
+#       were ligated end-to-end during library preparation.
+#
+#   Test B (structure_check):
+#       A complete second Linker1+Linker2 barcode structure is found upstream
+#       of the primary barcode. This structurally confirms a chimera without
+#       relying on adapter sequence detection.
+#
+# Chimeric reads are written to chimeric_reads.fastq for manual inspection.
+# They are EXCLUDED from assigned_reads.fastq to avoid contaminating the
+# cell × gene matrix. The output header includes: XC:Z:CHIMERIC_<reason>
+#
+# Reason values:
+#   INTERNAL_ADAPTER              — Test A only
+#   SECOND_BC_STRUCTURE           — Test B only
+#   INTERNAL_ADAPTER_AND_SECOND_BC_STRUCTURE — Both tests passed
+# -----------------------------------------------------------------------------
+chimeric:
+
+  # Enable Test A: search for an internal adapter sequence in the cDNA insert.
+  # Recommended: true. Disable only if you have no adapter sequences configured
+  # or if your library is known to be free of ligation artefacts.
+  adapter_check: true
+
+  # Adapter sequence to search for inside the insert.
+  # Leave empty ("") to automatically use adapter.sequence_5prime as the query.
+  # Set explicitly if the internal adapter sequence differs from the sequencing
+  # adapter (e.g. if you used a different kit for your ligation step).
+  adapter_seq: ""
+
+  # Maximum Levenshtein distance for the internal adapter search.
+  # Recommended: 3. This catches partially degraded adapters in chimeric reads
+  # without producing excessive false positives in normal cDNA sequence.
+  # Increase if you see chimeric reads being missed; decrease if the chimeric
+  # FASTQ contains many reads with no obvious adapter.
+  adapter_max_errors: 3
+
+  # Enable Test B: search for a second Linker1+Linker2 barcode structure inside
+  # the insert. This uses the same k-mer seeding and Levenshtein verification as
+  # the primary linker search, with the same tolerances from the linker1/linker2
+  # sections above.
+  # Recommended: true.
+  structure_check: true
+
+# -----------------------------------------------------------------------------
+# OUTPUT OPTIONS
+# -----------------------------------------------------------------------------
+output:
+
+  # Write reads that failed barcode extraction to unassigned_reads.fastq.
+  # Each failed read's header contains: FAIL_REASON:<reason>
+  #
+  # Recommended: true during initial pipeline runs — the failure reasons in
+  # qc_summary.tsv and the unassigned FASTQ are invaluable for diagnosing
+  # parameter issues. Can be set to false in production to save disk space.
+  write_failed: true
